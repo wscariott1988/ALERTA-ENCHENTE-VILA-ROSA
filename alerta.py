@@ -7,7 +7,7 @@ import socketserver
 from datetime import datetime, timedelta, timezone
 
 # ================= CONFIGURAÇÕES =================
-TELEGRAM_BOT_TOKEN = "8580738712:AAGCGZ5FR4QlQMpCmpbUjwWk46VL73w21DQ"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = "-1004347624823"
 GRAPHQL_URL = "https://redehidrometeorologica.defesacivil.rs.gov.br/graphql"
 
