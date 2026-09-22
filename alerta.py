@@ -12,7 +12,6 @@ TELEGRAM_CHAT_ID = "-1004347624823"
 
 GRAPHQL_URL = "https://redehidrometeorologica.defesacivil.rs.gov.br/graphql"
 
-# Servidor Web de fachada para o Render não desligar a aplicação
 def iniciar_servidor_web_render():
     port = int(os.environ.get("PORT", 10000))
     handler = http.server.SimpleHTTPRequestHandler
@@ -26,17 +25,13 @@ def iniciar_servidor_web_render():
 # Regra de Subida Repentina (30 cm em 10 min)
 LIMITE_SUBIDA_REPENTINA = 0.30  
 
-# Checkpoints (Base Normal ~105.50m)
-CHECKPOINTS = [
-    106.50, # Atenção (+1,00 m)
-    107.50, # Alerta Moderado (+2,00 m)
-    108.50, # ALERTA CRÍTICO / Gordurinha (+3,00 m - Falta 50 cm para alagar)
-    109.00, # TRANSBORDAMENTO (+3,50 m)
-    110.00  # Inundação Severa (+4,50 m)
-]
+# Novas Cotas Calibradas para a Vila Rosa
+CHECKPOINTS = [108.30, 111.00, 112.00]
 
 ultimo_nivel = None
 ultimo_checkpoint_alertado = None
+ultimo_dia_sinal_vida = None
+primeira_leitura = True  # Inicialização silenciosa ativada
 
 query = """
 query GetTags {
@@ -60,7 +55,10 @@ query GetTags {
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://redehidrometeorologica.defesacivil.rs.gov.br",
+    "Referer": "https://redehidrometeorologica.defesacivil.rs.gov.br/"
 }
 
 def enviar_telegram(mensagem):
@@ -73,12 +71,40 @@ def enviar_telegram(mensagem):
         else:
             print(f"🔴 Erro no Telegram: {res.text}")
     except Exception as e:
-        print(f"🔴 Erro de conexão: {e}")
+        print(f"🔴 Erro de conexão com o Telegram: {e}")
+
+def verificar_sinal_de_vida(nivel_atual):
+    global ultimo_dia_sinal_vida
+    hoje = time.strftime('%Y-%m-%d')
+    hora_atual = time.strftime('%H')
+
+    if hora_atual == "08" and ultimo_dia_sinal_vida != hoje:
+        msg_sinal = (
+            f"🟢 *SISTEMA OPERACIONAL (SINAL DE VIDA)* 🟢\n\n"
+            f"📅 *Data/Hora:* {time.strftime('%d/%m/%Y - %H:%M')}\n"
+            f"🌊 *Nível Atual do Arroio:* {nivel_atual:.2f} m\n\n"
+            f"🤖 _O monitoramento automático segue ativo 24 horas por dia._"
+        )
+        enviar_telegram(msg_sinal)
+        ultimo_dia_sinal_vida = hoje
 
 def analisar_e_alertar(nivel_atual):
-    global ultimo_nivel, ultimo_checkpoint_alertado
+    global ultimo_nivel, ultimo_checkpoint_alertado, primeira_leitura
     
-    # 1. SUBIDA REPENTINA
+    checkpoint_atingido = None
+    for cp in sorted(CHECKPOINTS):
+        if nivel_atual >= cp:
+            checkpoint_atingido = cp
+
+    # INICIALIZAÇÃO SILENCIOSA: grava estado atual sem avisos falsos ao religar
+    if primeira_leitura:
+        ultimo_nivel = nivel_atual
+        ultimo_checkpoint_alertado = checkpoint_atingido
+        primeira_leitura = False
+        print(f"⚙️ Calibração inicial: Nível {nivel_atual:.2f} m | Checkpoint base: {checkpoint_atingido}")
+        return
+
+    # 1. VERIFICAÇÃO DE SUBIDA REPENTINA (30 cm em 10 min)
     if ultimo_nivel is not None:
         variacao = nivel_atual - ultimo_nivel
         if variacao >= LIMITE_SUBIDA_REPENTINA:
@@ -91,28 +117,31 @@ def analisar_e_alertar(nivel_atual):
             )
             enviar_telegram(msg)
 
-    # 2. CHECKPOINTS DE ALTURA
-    checkpoint_atingido = None
-    for cp in sorted(CHECKPOINTS):
-        if nivel_atual >= cp:
-            checkpoint_atingido = cp
-
+    # 2. SUBIDA PARA UM NOVO CHECKPOINT
     if checkpoint_atingido is not None:
         if ultimo_checkpoint_alertado is None or checkpoint_atingido > ultimo_checkpoint_alertado:
-            if checkpoint_atingido >= 109.00:
-                icone, status, acao = "🔴", "*TRANSBORDAMENTO ATINGIDO*", "A água está saindo da calha do arroio!"
-            elif checkpoint_atingido == 108.50:
-                icone, status, acao = "🟠", "*ALERTA CRÍTICO (Gordurinha de Segurança)*", "Levantem móveis e retirem os carros das áreas baixas!"
-            else:
-                icone, status, acao = "🟡", "*NÍVEL DE ATENÇÃO*", "O nível do arroio está subindo."
+            if checkpoint_atingido == 108.30:
+                msg = (
+                    f"ℹ️ *INFORMATIVO DE TRÂNSITO LOCAL*\n\n"
+                    f"🌊 *Nível do Arroio:* {nivel_atual:.2f} m\n"
+                    f"📍 *Atenção:* Lâmina d'água passando sobre a ponte (final da *Rua Esporte Clube Vila Rosa*).\n"
+                    f"🚗 Atenção ao trafegar pela ponte. Residências sem risco no momento."
+                )
+            elif checkpoint_atingido == 111.00:
+                msg = (
+                    f"🟡 *ALERTA DE PROXIMIDADE*\n\n"
+                    f"🌊 *Nível do Arroio:* {nivel_atual:.2f} m\n"
+                    f"⚠️ *Situação:* A água está próxima das residências, mas ainda sem atingir os pátios habitados.\n"
+                    f"📋 Acompanhamento atento das lideranças comunitárias."
+                )
+            else:  # >= 112.00
+                msg = (
+                    f"🚨 *ALERTA CRÍTICO - ÁGUA NAS CASAS* 🚨\n\n"
+                    f"🌊 *Nível do Arroio:* {nivel_atual:.2f} m\n"
+                    f"⚠️ *Situação Crítica:* A água começou a invadir as primeiras casas e terrenos da Vila Rosa.\n"
+                    f"📦 *Ação:* Retirem os veículos das áreas baixas e iniciem a evacuação preventiva das residências atingidas!"
+                )
 
-            msg = (
-                f"{icone} *ATUALIZAÇÃO DE NÍVEL* {icone}\n\n"
-                f"{status}\n"
-                f"📍 *Cota:* {checkpoint_atingido:.2f} m\n"
-                f"🌊 *Nível Medido:* {nivel_atual:.2f} m\n\n"
-                f"⚠️ *Ação:* {acao}"
-            )
             enviar_telegram(msg)
             ultimo_checkpoint_alertado = checkpoint_atingido
 
@@ -122,7 +151,7 @@ def analisar_e_alertar(nivel_atual):
             f"🟢 *O NÍVEL DO ARROIO COMEÇOU A BAIXAR* 🟢\n\n"
             f"🌊 *Nível Medido:* {nivel_atual:.2f} m\n"
             f"📉 *Status:* O rio recuou para baixo da cota de {ultimo_checkpoint_alertado:.2f} m.\n\n"
-            f"ℹ️ A água está recuando. Mantenham a atenção."
+            f"ℹ️ A água está recuando. Mantenham a atenção até a normalização."
         )
         enviar_telegram(msg_recuo)
         ultimo_checkpoint_alertado = checkpoint_atingido
@@ -132,25 +161,28 @@ def analisar_e_alertar(nivel_atual):
 def consultar_estacao():
     try:
         response = requests.post(GRAPHQL_URL, json={"query": query}, headers=headers, timeout=15)
-        dados = response.json()
         
-        resultado = dados["data"]["tags_data"]["qualle_meteorologia"][0]
-        nivel_atual = float(resultado["data"]["rio"]["rio_nivel"]["value"])
-        
-        hora = time.strftime('%H:%M:%S')
-        print(f"[{hora}] Consulta realizada | Nível lido: {nivel_atual:.2f} m")
-        
-        analisar_e_alertar(nivel_atual)
+        if response.status_code == 200:
+            dados = response.json()
+            resultado = dados["data"]["tags_data"]["qualle_meteorologia"][0]
+            nivel_atual = float(resultado["data"]["rio"]["rio_nivel"]["value"])
+            
+            hora = time.strftime('%H:%M:%S')
+            print(f"[{hora}] Consulta realizada | Nível lido: {nivel_atual:.2f} m")
+            
+            verificar_sinal_de_vida(nivel_atual)
+            analisar_e_alertar(nivel_atual)
+        else:
+            print(f"[{time.strftime('%H:%M:%S')}] Erro na API Defesa Civil: HTTP {response.status_code}")
         
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] Erro na consulta: {e}")
 
 if __name__ == "__main__":
-    # Inicia o servidor web em paralelo
     threading.Thread(target=iniciar_servidor_web_render, daemon=True).start()
     
     print("Iniciando Monitoramento do Arroio Feitoria...")
-    enviar_telegram("🤖 O sistema de alertas de enchente foi LIGADO no Render e está monitorando o nível do rio.")
+    enviar_telegram("🤖 O sistema de alertas de enchente foi REINICIADO com as novas cotas e está monitorando o leito do rio.")
     
     consultar_estacao()
     
